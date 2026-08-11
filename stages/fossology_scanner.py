@@ -143,7 +143,11 @@ class FossologyScanner:
 
     async def _scan_via_rest_api(self, src_dir: str) -> FossologyResult:
         logger.info("Scanning via FOSSology REST API at %s", self.fossology_url)
-        headers = {"Authorization": f"Bearer {self.fossology_token}"}
+        token = self.fossology_token.strip()
+        # FOSSology's /tokens endpoint returns the value already prefixed with
+        # "Bearer ", so avoid double-prefixing if the caller passed that through.
+        auth_value = token if token.lower().startswith("bearer ") else f"Bearer {token}"
+        headers = {"Authorization": auth_value}
 
         async with aiohttp.ClientSession(headers=headers) as session:
             # 1. Create a tar archive of src_dir and upload it
@@ -154,8 +158,10 @@ class FossologyScanner:
             upload_id = await self._fossology_upload(session, tmp_path)
             os.unlink(tmp_path)
 
-            # 2. Schedule scans
-            job_id = await self._fossology_schedule_jobs(session, upload_id)
+            # 2. Schedule scans. FOSSology needs a brief moment to register a
+            # freshly-uploaded file before it will accept jobs against it —
+            # retry with backoff instead of failing on the first race.
+            job_id = await self._fossology_schedule_jobs_with_retry(session, upload_id)
 
             # 3. Poll until done
             await self._fossology_wait_job(session, job_id)
@@ -166,25 +172,36 @@ class FossologyScanner:
         return self._build_result(findings, scanner="fossology-rest")
 
     async def _fossology_upload(self, session: aiohttp.ClientSession, tar_path: str) -> int:
-        url = f"{self.fossology_url}/api/v1/uploads"
-        async with session.post(
-            url,
-            data={"folderId": 1},
-            headers={"folderId": "1"},
-        ) as resp:
-            # Then upload file
-            pass
-        # Simplified: use multipart form upload
         with open(tar_path, "rb") as f:
             form = aiohttp.FormData()
             form.add_field("fileInput", f, filename="sdk_source.tar.gz", content_type="application/gzip")
             async with session.post(
                 f"{self.fossology_url}/api/v1/uploads",
                 data=form,
-                headers={"folderId": "1"},
+                # FOSSology's REST API requires both folderId and uploadType
+                # headers on the multipart upload, or it rejects the request
+                # with "Require uploadType" (400).
+                headers={"folderId": "1", "uploadType": "file"},
             ) as resp:
                 data = await resp.json()
-                return data["message"]
+                if resp.status not in (200, 201) or "message" not in data:
+                    raise RuntimeError(f"FOSSology upload failed: {data}")
+                return int(data["message"])
+
+    async def _fossology_schedule_jobs_with_retry(
+        self, session: aiohttp.ClientSession, upload_id: int,
+        attempts: int = 6, base_delay: float = 2.0,
+    ) -> int:
+        last_exc: Optional[Exception] = None
+        for attempt in range(attempts):
+            try:
+                return await self._fossology_schedule_jobs(session, upload_id)
+            except RuntimeError as exc:
+                last_exc = exc
+                if "does not have upload id" not in str(exc):
+                    raise
+                await asyncio.sleep(base_delay * (attempt + 1))
+        raise last_exc  # type: ignore[misc]
 
     async def _fossology_schedule_jobs(self, session: aiohttp.ClientSession, upload_id: int) -> int:
         url = f"{self.fossology_url}/api/v1/jobs"
@@ -201,10 +218,16 @@ class FossologyScanner:
         async with session.post(
             url,
             json=payload,
-            params={"upload": upload_id, "folder": 1},
+            # FOSSology's REST API requires folderId/uploadId as headers,
+            # not query params — sending them as params yields "Folder id
+            # and upload id should be integers!" even though the values
+            # are valid integers.
+            headers={"folderId": "1", "uploadId": str(upload_id)},
         ) as resp:
             data = await resp.json()
-            return data.get("message", 0)
+            if resp.status not in (200, 201) or "message" not in data:
+                raise RuntimeError(f"FOSSology job scheduling failed: {data}")
+            return int(data["message"])
 
     async def _fossology_wait_job(self, session: aiohttp.ClientSession, job_id: int, timeout: int = 600) -> None:
         url = f"{self.fossology_url}/api/v1/jobs/{job_id}"
@@ -224,17 +247,39 @@ class FossologyScanner:
     async def _fossology_fetch_licenses(
         self, session: aiohttp.ClientSession, upload_id: int
     ) -> List[FileLicenseFinding]:
+        # The `agent` query param is mandatory — FOSSology returns
+        # "agent parameter missing from query." (400) without it.
         url = f"{self.fossology_url}/api/v1/uploads/{upload_id}/licenses"
-        async with session.get(url) as resp:
+        async with session.get(url, params={"agent": "nomos"}) as resp:
             data = await resp.json()
 
+        if isinstance(data, dict) and data.get("code"):
+            raise RuntimeError(f"FOSSology license fetch failed: {data}")
+
         findings = []
+        # Strip the temporary tar wrapper directories FOSSology creates on
+        # upload (e.g. "sdk_source.tar.gz/sdk_source.tar/foo.py" -> "foo.py")
+        # and skip the synthetic entries for the archive containers
+        # themselves (no license/copyright data of their own).
+        archive_prefix_re = re.compile(r"^[^/]+\.tar\.gz/[^/]+\.tar/")
         for item in data:
-            lic_names = [lic.get("shortName", "") for lic in item.get("licenses", [])]
+            # Real response shape:
+            # {"filePath": ..., "findings": {"scanner": [...], "conclusion": ..., "copyright": ...}}
+            raw_path = item.get("filePath", "")
+            if archive_prefix_re.fullmatch(raw_path) or raw_path.endswith((".tar", ".tar.gz")):
+                continue
+            file_path = archive_prefix_re.sub("", raw_path)
+            file_findings = item.get("findings", {}) or {}
+            lic_names = file_findings.get("scanner") or []
+            copyright_val = file_findings.get("copyright")
+            copyrights = (
+                copyright_val if isinstance(copyright_val, list)
+                else [copyright_val] if copyright_val else []
+            )
             f = FileLicenseFinding(
-                file_path=item.get("filePath", ""),
+                file_path=file_path,
                 licenses=lic_names,
-                copyrights=[c.get("content", "") for c in item.get("copyrights", [])],
+                copyrights=copyrights,
                 is_copyleft=any(l in COPYLEFT_LICENSES for l in lic_names),
                 has_license_header=bool(lic_names),
                 scanner="fossology-rest",
