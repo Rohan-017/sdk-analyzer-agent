@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Generated analysis output (large, regenerable per-run)
+output/
+work_tmp/
+/tmp/
+
+# Vendored third-party tool distribution — installed automatically by
+# Dockerfile / docker-compose instead of being committed to git.
+tools/dependency-check/
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Env secrets
+.env

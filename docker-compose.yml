@@ -1,0 +1,78 @@
+version: "3.9"
+
+services:
+
+  # --------------------------------------------------------------------------
+  # FOSSology (license scanning server + PostgreSQL)
+  # --------------------------------------------------------------------------
+  fossology-db:
+    image: postgres:14-alpine
+    container_name: fossology-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       fossology
+      POSTGRES_USER:     fossy
+      POSTGRES_PASSWORD: fossy
+    volumes:
+      - fossology_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fossy -d fossology"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  fossology:
+    image: fossology/fossology:latest
+    container_name: fossology
+    restart: unless-stopped
+    depends_on:
+      fossology-db:
+        condition: service_healthy
+    ports:
+      - "8081:80"
+    environment:
+      FOSSOLOGY_DB_HOST:     fossology-db
+      FOSSOLOGY_DB_NAME:     fossology
+      FOSSOLOGY_DB_USER:     fossy
+      FOSSOLOGY_DB_PASSWORD: fossy
+    volumes:
+      - fossology_data:/srv/fossology/repository
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/repo/api/v1/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  # --------------------------------------------------------------------------
+  # SDK Analyzer Agent (API server)
+  # --------------------------------------------------------------------------
+  sdk-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sdk-analyzer
+    restart: unless-stopped
+    depends_on:
+      fossology:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    environment:
+      FOSSOLOGY_URL:   "http://fossology/repo"
+      FOSSOLOGY_TOKEN: "${FOSSOLOGY_TOKEN:-}"   # set via .env file
+      OUTPUT_DIR:      "/app/output"
+      PORT:            "8000"
+    volumes:
+      - sdk_output:/app/output
+      - /tmp/sdk_analyzer:/tmp/sdk_analyzer   # extraction work dir
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  fossology_db_data:
+  fossology_data:
+  sdk_output:

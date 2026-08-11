@@ -1,0 +1,263 @@
+rules:
+  # ---------------------------------------------------------------------------
+  # C / Embedded security rules (primary target: SDK C code)
+  # ---------------------------------------------------------------------------
+
+  - id: c-gets-usage
+    pattern: gets($BUF)
+    message: "gets() has no bounds checking and causes stack buffer overflows — use fgets() instead"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-120
+
+  - id: c-strcpy-usage
+    pattern: strcpy($DST, $SRC)
+    message: "strcpy() has no bounds checking — use strncpy() or strlcpy() instead"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-120
+
+  - id: c-strcat-usage
+    pattern: strcat($DST, $SRC)
+    message: "strcat() has no bounds checking — use strncat() or strlcat() instead"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-120
+
+  - id: c-sprintf-usage
+    pattern: sprintf($BUF, $FMT, ...)
+    message: "sprintf() has no bounds checking — use snprintf() instead"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-120
+
+  - id: c-scanf-usage
+    pattern: scanf($FMT, ...)
+    message: "scanf() without width specifier is vulnerable to buffer overflow — use scanf(\"%Ns\",...) with a width"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-120
+
+  - id: c-system-call
+    pattern: system($CMD)
+    message: "system() passes command to shell — vulnerable to command injection if input is user-controlled"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-78
+
+  - id: c-popen-usage
+    pattern: popen($CMD, $MODE)
+    message: "popen() is vulnerable to command injection — validate/sanitise $CMD before use"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-78
+
+  - id: c-memcpy-no-bounds
+    patterns:
+      - pattern: memcpy($DST, $SRC, strlen($SRC))
+    message: "memcpy with strlen() as size may cause off-by-one — use strlcpy() or add +1 check"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-193
+
+  - id: c-malloc-no-check
+    patterns:
+      - pattern: |
+          $PTR = malloc($SIZE);
+          *$PTR = ...;
+    message: "malloc() return value not checked for NULL before dereference"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-476
+
+  - id: c-integer-overflow-alloc
+    patterns:
+      - pattern: malloc($A * $B)
+    message: "Multiplication in malloc() argument may integer-overflow — use checked_mul or validate sizes"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-190
+
+  - id: c-hardcoded-password
+    patterns:
+      - pattern: char $KEY[] = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(password|passwd|secret|api_key|token|credential)
+    message: "Hardcoded credential in C string — use secure config or environment variable"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-798
+
+  - id: c-use-after-free
+    patterns:
+      - pattern: |
+          free($PTR);
+          ... $PTR ...
+    message: "Possible use-after-free: $PTR used after free()"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-416
+
+  - id: c-double-free
+    patterns:
+      - pattern: |
+          free($PTR);
+          ...
+          free($PTR);
+    message: "Possible double-free: $PTR freed twice without reassignment"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-415
+
+  - id: c-format-string
+    patterns:
+      - pattern: printf($VAR)
+      - pattern: fprintf($FD, $VAR)
+      - pattern: syslog($PRI, $VAR)
+    message: "Format string vulnerability — user-controlled string passed directly as format argument"
+    languages: [c, cpp]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-134
+
+  - id: c-insecure-rand
+    pattern: rand()
+    message: "rand() is not cryptographically secure — use /dev/urandom or a CSPRNG for security-sensitive randomness"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-338
+
+  - id: c-md5-usage
+    patterns:
+      - pattern: MD5($DATA, $LEN, $DIGEST)
+      - pattern: MD5_Init(...)
+    message: "MD5 is cryptographically broken — use SHA-256 or SHA-3 instead"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-327
+
+  - id: c-sha1-usage
+    patterns:
+      - pattern: SHA1($DATA, $LEN, $DIGEST)
+      - pattern: SHA1_Init(...)
+    message: "SHA-1 is deprecated for security use — use SHA-256 or SHA-3"
+    languages: [c, cpp]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-327
+
+  # ---------------------------------------------------------------------------
+  # Python security rules
+  # ---------------------------------------------------------------------------
+
+  - id: sdk-hardcoded-api-key
+    patterns:
+      - pattern: $KEY = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(api_key|apikey|api_token|access_token|secret_key|private_key)
+    message: "Hardcoded API key or token detected: $KEY"
+    languages: [python, javascript, typescript, java]
+    severity: ERROR
+    metadata:
+      category: security
+
+  - id: sdk-hardcoded-password
+    patterns:
+      - pattern: $KEY = "..."
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: (?i)(password|passwd|pwd|secret|token|credential)
+    message: "Hardcoded password or secret detected: $KEY"
+    languages: [python, javascript, typescript, java]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-798
+      cwe: CWE-798
+
+  - id: sdk-insecure-random
+    pattern: random.random()
+    message: "Use secrets.token_bytes() instead of random for security-sensitive randomness"
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: security
+      cwe: CWE-338
+
+  - id: sdk-pickle-deserialization
+    pattern: pickle.loads(...)
+    message: "pickle.loads() is unsafe with untrusted data — use JSON or MessagePack"
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-502
+
+  - id: sdk-os-command-injection
+    patterns:
+      - pattern: subprocess.run(..., shell=True, ...)
+      - pattern: os.system(...)
+    message: "Potential OS command injection via shell=True or os.system"
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: CWE-78
+
+  # ---------------------------------------------------------------------------
+  # Quality rules (language-agnostic)
+  # ---------------------------------------------------------------------------
+
+  - id: sdk-broad-exception-catch
+    pattern: |
+      try:
+        ...
+      except Exception:
+        pass
+    message: "Silently catching all exceptions hides bugs. Log or re-raise."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: quality
+
+  - id: sdk-assert-in-prod
+    pattern: "assert ..."
+    message: "assert statements are stripped by Python optimized mode (-O). Use explicit checks."
+    languages: [python]
+    severity: INFO
+    metadata:
+      category: quality

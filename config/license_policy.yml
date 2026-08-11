@@ -1,0 +1,85 @@
+# ---------------------------------------------------------------------------
+# License Policy Configuration
+# Controls which licenses are allowed, restricted, or prohibited.
+# ---------------------------------------------------------------------------
+
+policy_name: "SDK Default License Policy"
+version: "1.1"
+
+# Licenses that are fully allowed (permissive)
+allowed:
+  - MIT
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - Unlicense
+  - CC0-1.0
+  - Python-2.0
+  - PSF-2.0
+  - WTFPL
+  - Zlib
+  - Libpng
+  - OpenSSL
+
+# Licenses that require review before inclusion
+# NOTE: GPL variants are expected in embedded SDKs (Linux kernel, U-Boot, BusyBox).
+# They require proper attribution and compliance, but are not prohibited.
+review_required:
+  - GPL-2.0
+  - GPL-2.0-only
+  - GPL-2.0-or-later
+  - GPL-2.0+
+  - GPL-3.0
+  - GPL-3.0-only
+  - GPL-3.0-or-later
+  - LGPL-2.1
+  - LGPL-2.1-only
+  - LGPL-2.1-or-later
+  - LGPL-3.0
+  - LGPL-3.0-only
+  - LGPL-3.0-or-later
+  - MPL-2.0        # Copyleft but file-scoped — usually acceptable
+  - EPL-2.0        # Weak copyleft — review required
+  - CDDL-1.0       # Weak copyleft
+
+# Licenses that are truly prohibited (incompatible with distribution)
+prohibited:
+  - AGPL-3.0
+  - AGPL-3.0-only
+  - AGPL-3.0-or-later
+  - SSPL-1.0
+  - BUSL-1.1        # Business Source License — not open source
+  - Proprietary     # Unlicensed proprietary third-party code (not Airoha's own)
+
+# Special rules
+rules:
+  # Warn on copyleft GPL — requires attribution + source offer
+  - name: "gpl-attribution-required"
+    match: ["GPL-2.0", "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0", "GPL-3.0-only"]
+    action: "WARN"
+    message: "GPL components require source code availability and written offer of source"
+
+  # AGPL triggers FAIL — network use forces disclosure
+  - name: "no-agpl-in-sdk"
+    match: ["AGPL-3.0", "AGPL-3.0-only", "AGPL-3.0-or-later"]
+    action: "FAIL"
+    message: "AGPL licenses require disclosure for network-accessible software"
+
+  # LGPL must be dynamically linked
+  - name: "lgpl-dynamic-link-only"
+    match: ["LGPL-2.1", "LGPL-2.1-only", "LGPL-3.0", "LGPL-3.0-only"]
+    action: "WARN"
+    message: "LGPL components must be dynamically linked to preserve user freedoms"
+
+  # All source files should have a license header
+  - name: "require-license-headers"
+    condition: "missing_license_header"
+    action: "WARN"
+    message: "Source files must include SPDX license headers"
+
+  # NOTICE files required for Apache 2.0
+  - name: "apache-notice-required"
+    match: ["Apache-2.0"]
+    action: "INFO"
+    message: "Apache 2.0 requires a NOTICE file with attribution statements"
