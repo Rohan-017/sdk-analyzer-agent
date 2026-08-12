@@ -5,13 +5,23 @@ LABEL description="SDK Analyzer Agent — SBOM, license compliance, vulnerabilit
 
 # ---------------------------------------------------------------------------
 # System dependencies + open-source tools
+#
+# NOTE: FOSSology's CLI scanners (nomos/monk/copyright) are NOT available as
+# Debian/Ubuntu apt packages — "fossology-nomos" etc. do not exist upstream,
+# so installing them here always failed the build. License scanning against
+# FOSSology instead goes through its REST API, served by the separate
+# `fossology` container defined in docker-compose.yml (see FOSSOLOGY_URL /
+# FOSSOLOGY_TOKEN below). If FOSSology is unreachable, the agent falls back
+# to a built-in Python regex license scanner automatically.
 # ---------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl wget tar gzip git \
-    # FOSSology CLI tools (nomos, monk, copyright scanner)
-    fossology-nomos fossology-monk fossology-copyright \
+    curl wget tar gzip git unzip \
     # Java (needed for OWASP Dependency-Check)
     default-jre-headless \
+    # libgomp1 (GNU OpenMP runtime) is required by ScanCode Toolkit's
+    # bundled libarchive extension — without it "scancode --version"
+    # fails at import time with "libgomp.so.1: cannot open shared object".
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
