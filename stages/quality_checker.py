@@ -7,6 +7,7 @@ Falls back to a built-in rule engine when Semgrep is not installed.
 import asyncio
 import json
 import logging
+import os
 import re
 import subprocess
 from dataclasses import dataclass, field
@@ -147,7 +148,8 @@ class QualityChecker:
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        self._semgrep_available = self._check_semgrep()
+        self._semgrep_available  = self._check_semgrep()
+        self._gitleaks_available = self._check_gitleaks()
 
     # ------------------------------------------------------------------
     # Public API
@@ -160,8 +162,88 @@ class QualityChecker:
             logger.info("semgrep not found — using built-in rule engine")
             result = self._builtin_scan(src_dir)
 
+        # Secret detection is a distinct, higher-precision concern than
+        # Semgrep's generic hardcoded-credential rules — dedicated scanners
+        # like gitleaks carry a much larger, continuously-updated library of
+        # provider-specific token/key formats (AWS, GitHub, Slack, private
+        # keys, etc.) and are the industry standard for this specific job.
+        # Run it unconditionally alongside Semgrep/builtin rather than as a
+        # replacement, and merge its findings into the same result so they
+        # flow through the existing report/HTML pipeline.
+        if self._gitleaks_available:
+            secret_findings = await self._run_gitleaks(src_dir)
+            if secret_findings:
+                result.findings.extend(secret_findings)
+                result.total_findings = len(result.findings)
+                for f in secret_findings:
+                    result.category_counts[f.category] = result.category_counts.get(f.category, 0) + 1
+                    result.severity_counts[f.severity] = result.severity_counts.get(f.severity, 0) + 1
+                result.scanner_used = f"{result.scanner_used}+gitleaks"
+        else:
+            logger.info("gitleaks not found — secret detection limited to Semgrep/builtin rules")
+
         result.recommendations = self._generate_recommendations(result.findings)
         return result
+
+    # ------------------------------------------------------------------
+    # gitleaks (dedicated secret scanner)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _check_gitleaks() -> bool:
+        try:
+            return subprocess.run(["which", "gitleaks"], capture_output=True).returncode == 0
+        except FileNotFoundError:
+            return False
+
+    async def _run_gitleaks(self, src_dir: str) -> List[QualityFinding]:
+        output_json = str(self.output_dir / "gitleaks_output.json")
+        cmd = [
+            "gitleaks", "detect",
+            "--source", src_dir,
+            "--no-git",             # scan working tree, not git history
+            "--no-banner",
+            "-f", "json",
+            "-r", output_json,
+            "--exit-code", "0",     # never fail the process on findings
+        ]
+        logger.info("Running gitleaks secret scan (src: %s)", src_dir.rsplit("/", 1)[-1])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=180)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("gitleaks timed out — skipping secret scan for this run")
+            return []
+
+        path = Path(output_json)
+        if not path.exists():
+            return []
+        try:
+            with open(path) as f:
+                raw = f.read().strip()
+            leaks = json.loads(raw) if raw else []
+        except (json.JSONDecodeError, OSError):
+            logger.warning("Failed to parse gitleaks output")
+            return []
+
+        findings: List[QualityFinding] = []
+        for leak in leaks:
+            findings.append(QualityFinding(
+                rule_id=f"gitleaks-{leak.get('RuleID', 'secret')}",
+                category="security",
+                severity="ERROR",
+                message=f"Potential secret leaked: {leak.get('Description', leak.get('RuleID', 'unknown'))}",
+                file_path=leak.get("File", ""),
+                line_number=leak.get("StartLine", 0),
+                line_content="[redacted]",  # never surface the actual secret value in reports
+                fix_suggestion="Remove the credential from source, rotate it immediately, and load secrets from a vault/env var instead.",
+            ))
+        return findings
 
     # ------------------------------------------------------------------
     # Semgrep
@@ -179,24 +261,40 @@ class QualityChecker:
 
     async def _run_semgrep(self, src_dir: str) -> QualityResult:
         output_json = str(self.output_dir / "semgrep_output.json")
+
+        # Privacy/air-gap default: Semgrep's "auto" config phones home to the
+        # Semgrep Registry to select rules for the detected languages, and
+        # sends anonymized usage telemetry unless explicitly disabled. For a
+        # tool whose whole purpose is scanning potentially proprietary source
+        # code, we default to fully offline operation — only our bundled
+        # local rules run, and telemetry is always disabled regardless of
+        # mode. Set SDK_ANALYZER_ALLOW_NETWORK_RULES=1 to opt back into the
+        # broader (network-dependent) "auto" registry ruleset.
+        allow_network_rules = os.environ.get("SDK_ANALYZER_ALLOW_NETWORK_RULES", "") == "1"
         cmd = [
             "semgrep",
-            "--config", "auto",
             "--json",
             "--output", output_json,
             "--quiet",
             "--timeout", "120",
         ]
-        # Also load our custom rules if the file exists
+        if allow_network_rules:
+            cmd += ["--config", "auto"]
+            logger.info("SDK_ANALYZER_ALLOW_NETWORK_RULES=1 — using Semgrep Registry 'auto' config")
         if self._SEMGREP_CUSTOM_RULES.exists():
             cmd += ["--config", str(self._SEMGREP_CUSTOM_RULES)]
             logger.info("Loading custom Semgrep rules from %s", self._SEMGREP_CUSTOM_RULES)
+        elif not allow_network_rules:
+            logger.warning("No local Semgrep rules found and network rules disabled — falling back to built-in scanner")
+            return self._builtin_scan(src_dir)
         cmd.append(src_dir)
         logger.info("Running Semgrep (src: %s)", src_dir.rsplit("/", 1)[-1])
+        env = {**os.environ, "SEMGREP_SEND_METRICS": "off"}
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
         try:
             await asyncio.wait_for(proc.communicate(), timeout=300)

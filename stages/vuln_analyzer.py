@@ -67,7 +67,10 @@ class VulnerabilityAnalyzer:
     Priority:
     1. Grype (fast, uses SBOM directly)
     2. OWASP Dependency-Check (deeper, slower)
-    3. OSV.dev REST API fallback (no local install needed)
+    3. Trivy (cross-check — independent DB/engine, run alongside Grype/OWASP
+       rather than as a replacement so disagreements between scanners surface
+       for human review instead of silently trusting a single source)
+    4. OSV.dev REST API fallback (no local install needed)
     """
 
     def __init__(self, output_dir: str):
@@ -75,6 +78,7 @@ class VulnerabilityAnalyzer:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._grype_available   = self._check_tool("grype")
         self._owasp_available   = self._check_tool("dependency-check")
+        self._trivy_available   = self._check_tool("trivy")
 
     # ------------------------------------------------------------------
     # Public API
@@ -94,6 +98,10 @@ class VulnerabilityAnalyzer:
         if self._owasp_available:
             src_dir = str(Path(sbom_path).parent)
             r = await self._run_owasp(src_dir)
+            results.append(r)
+
+        if self._trivy_available:
+            r = await self._run_trivy(sbom_path)
             results.append(r)
 
         if not results:
@@ -234,6 +242,73 @@ class VulnerabilityAnalyzer:
             ))
 
         return self._build_result(findings, scanner="grype")
+
+    # ------------------------------------------------------------------
+    # Trivy (independent cross-check scanner)
+    # ------------------------------------------------------------------
+
+    async def _run_trivy(self, sbom_path: str) -> VulnerabilityResult:
+        output_json = str(self.output_dir / "trivy_output.json")
+        cmd = [
+            "trivy", "sbom", sbom_path,
+            "--format", "json",
+            "--output", output_json,
+            "--quiet",
+            # Vuln DB lives in a cache dir so repeat runs don't re-download
+            # ~100MB every time; override with TRIVY_CACHE_DIR if desired.
+            "--cache-dir", os.environ.get("TRIVY_CACHE_DIR", str(Path.home() / ".cache" / "trivy")),
+        ]
+        logger.info("Running Trivy cross-check (sbom: %s)", sbom_path.rsplit("/", 1)[-1])
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            logger.warning("Trivy timed out — skipping cross-check for this run")
+            return VulnerabilityResult(error="trivy timed out", scanner_used="trivy")
+
+        if proc.returncode != 0 and not Path(output_json).exists():
+            logger.warning("Trivy failed: %s", stderr.decode()[:300])
+            return VulnerabilityResult(error=f"trivy failed: {stderr.decode()[:300]}", scanner_used="trivy")
+
+        return self._parse_trivy_output(output_json)
+
+    def _parse_trivy_output(self, json_path: str) -> VulnerabilityResult:
+        if not Path(json_path).exists():
+            return VulnerabilityResult(error="trivy output not found", scanner_used="trivy")
+
+        with open(json_path) as f:
+            data = json.load(f)
+
+        findings: List[CVEFinding] = []
+        for result in data.get("Results", []):
+            for vuln in result.get("Vulnerabilities", []) or []:
+                severity = vuln.get("Severity", "UNKNOWN").upper()
+                cvss_score = 0.0
+                for source_scores in (vuln.get("CVSS") or {}).values():
+                    v3 = source_scores.get("V3Score")
+                    if v3:
+                        cvss_score = max(cvss_score, v3)
+
+                pkg_id = vuln.get("PkgID", "")
+                name, _, version = pkg_id.rpartition("@") if "@" in pkg_id else (vuln.get("PkgName", ""), "", "")
+                findings.append(CVEFinding(
+                    cve_id=vuln.get("VulnerabilityID", ""),
+                    severity=severity,
+                    cvss_score=cvss_score,
+                    component_name=name or vuln.get("PkgName", ""),
+                    component_version=version or vuln.get("InstalledVersion", ""),
+                    package_type=result.get("Type", ""),
+                    description=(vuln.get("Description") or "")[:300],
+                    fix_version=vuln.get("FixedVersion", ""),
+                    source="trivy",
+                ))
+
+        return self._build_result(findings, scanner="trivy")
 
     # ------------------------------------------------------------------
     # OWASP Dependency-Check

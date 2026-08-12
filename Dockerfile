@@ -58,6 +58,32 @@ RUN pip install --no-cache-dir semgrep
 RUN pip install --no-cache-dir scancode-toolkit
 
 # ---------------------------------------------------------------------------
+# Install gitleaks (dedicated secret scanner — catches leaked API keys,
+# tokens, and private keys with a much larger/more current rule set than
+# generic Semgrep credential patterns)
+# ---------------------------------------------------------------------------
+ENV GITLEAKS_VERSION=8.30.1
+RUN dpkg_arch="$(dpkg --print-architecture)" && \
+    case "$dpkg_arch" in \
+        amd64) gl_arch="x64" ;; \
+        arm64) gl_arch="arm64" ;; \
+        *) echo "Unsupported architecture for gitleaks: $dpkg_arch" >&2; exit 1 ;; \
+    esac && \
+    curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${gl_arch}.tar.gz" \
+        -o /tmp/gitleaks.tar.gz && \
+    tar xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks && \
+    chmod +x /usr/local/bin/gitleaks && \
+    rm /tmp/gitleaks.tar.gz
+
+# ---------------------------------------------------------------------------
+# Install Trivy (cross-check vulnerability scanner — broader ecosystem
+# coverage and a faster-updating vulnerability DB than Grype/OWASP DC alone;
+# run as an independent second opinion, not a replacement)
+# ---------------------------------------------------------------------------
+RUN curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+    | sh -s -- -b /usr/local/bin
+
+# ---------------------------------------------------------------------------
 # Application
 # ---------------------------------------------------------------------------
 WORKDIR /app

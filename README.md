@@ -11,8 +11,8 @@ ZIP Input
   ├─ Stage 2:  SBOM generation (Syft → SPDX + CycloneDX)
   ├─ Stage 3A: License scan (FOSSology REST API / nomos / Python fallback)
   ├─ Stage 3B: License cross-validation (ScanCode / Python fallback)
-  ├─ Stage 4:  Vulnerability analysis (Grype / OWASP DC / OSV.dev API)
-  ├─ Stage 5:  Code quality + improvements (Semgrep / built-in rules)
+  ├─ Stage 4:  Vulnerability analysis (Grype + OWASP DC + Trivy cross-check / OSV.dev API)
+  ├─ Stage 5:  Code quality + improvements (Semgrep + gitleaks / built-in rules)
   └─ Stage 6:  Report builder → JSON + HTML dashboard
 ```
 
@@ -67,6 +67,23 @@ curl http://localhost:8000/report/<analysis_id>/sbom/cyclonedx > sbom.json
 | `FOSSOLOGY_TOKEN`   | FOSSology API bearer token          | (disabled)    |
 | `OUTPUT_DIR`        | Report output directory             | `./output`    |
 | `PORT`              | API server port                     | `8000`        |
+| `SDK_ANALYZER_ALLOW_NETWORK_RULES` | Set to `1` to let Semgrep use `--config auto` (downloads/updates rules from the public Semgrep Registry). By default Semgrep runs **fully offline** against only the bundled `config/semgrep_rules.yml` and telemetry (`SEMGREP_SEND_METRICS`) is always disabled — this keeps scans air-gapped for privacy-sensitive/proprietary source, at the cost of narrower generic-rule coverage. | (unset — offline mode) |
+| `TRIVY_CACHE_DIR`   | Where Trivy stores its vulnerability DB (~100MB, downloaded once and cached) | `~/.cache/trivy` |
+
+## Privacy & Security Posture
+
+- Every scanning tool (Syft, Grype, Semgrep, ScanCode, FOSSology, OWASP
+  Dependency-Check, gitleaks, Trivy) is open source and runs **locally** —
+  no source code is ever uploaded to a third party.
+- Network calls made by the agent only ever send **public metadata** (package
+  name/version, CVE IDs) to public advisory databases (OSV.dev, FIRST.org
+  EPSS, NVD) as fallbacks/enrichment — never file contents.
+- Semgrep is offline-only by default (see `SDK_ANALYZER_ALLOW_NETWORK_RULES`
+  above). gitleaks and Trivy never make network calls to scan your code (Trivy
+  only fetches its public vulnerability DB, not your data).
+- Secret values found by gitleaks are **redacted** (`[redacted]`) before being
+  written into any report — the report tells you a secret was found, its rule,
+  and its file/line, but never reprints the actual credential.
 
 ## New: EPSS Exploit Prediction, Transitive Dependencies, Scan Diffing
 
@@ -122,8 +139,8 @@ Each stage degrades gracefully when tools are not installed:
 | SBOM            | Syft            | —              | Python manifest scan |
 | License scan    | FOSSology API   | nomos CLI      | Python regex scan    |
 | License cross   | ScanCode CLI    | —              | Python regex scan    |
-| Vulnerabilities | Grype           | OWASP DC       | OSV.dev REST API     |
-| Quality         | Semgrep         | —              | Built-in rule engine |
+| Vulnerabilities | Grype + OWASP DC (run together) | Trivy (cross-check, always runs alongside if installed) | OSV.dev REST API |
+| Quality         | Semgrep (offline rules by default) + gitleaks (secrets, always runs if installed) | — | Built-in rule engine |
 
 ## Output Files
 
@@ -136,12 +153,18 @@ output/
 ├── risk_history.json           # Risk score snapshot per run (last 30), powers trend chart
 ├── scan_diff.json              # Only written when --baseline is passed
 ├── grype_output.json           # Raw Grype findings
+├── trivy_output.json           # Raw Trivy findings (cross-check scanner)
 ├── scancode_output.json        # Raw ScanCode findings
 └── semgrep_output.json         # Raw Semgrep findings
 ```
 
 Each run overwrites the files above in place — pass a different `--output-dir` yourself
 if you want to keep multiple runs side by side.
+
+Every vulnerability finding in the JSON/HTML report carries a `source` field
+(`grype`, `owasp-dc`, `trivy`, or `osv`) so you can see which scanner(s) flagged
+each CVE — useful for spotting single-source findings worth double-checking
+versus CVEs confirmed by multiple independent scanners.
 
 ### JSON report schema
 
