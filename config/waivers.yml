@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# Waiver / Suppression List
+# Marks previously-reviewed findings as waived so they no longer count
+# toward the risk score or "active findings" total on future scans — but
+# they stay visible in the report (as "WAIVED") for audit purposes.
+#
+# `path` is matched as a glob against the file path *relative to the SDK's
+# extracted source root* (not the temp working directory). `rule_id` is
+# optional; if given, it's matched as a prefix (e.g. "gitleaks-" waives all
+# gitleaks rules, "gitleaks-private-key" waives only that specific rule).
+#
+# Override this file's location with SDK_ANALYZER_WAIVERS_FILE=/path/to/file.yml
+# ---------------------------------------------------------------------------
+
+waivers: []
+
+# Example:
+# waivers:
+#   - path: "config/production/old_signing_key.pem"
+#     rule_id: "gitleaks-private-key"
+#     reason: "Rotated 2024-01-15, ticket JIRA-4521"
+#     approved_by: "security-team"
+#   - path: "vendor/legacy_lib/*"
+#     rule_id: "hardcoded-password"
+#     reason: "Third-party vendored code, tracked upstream as VENDOR-88"
+#     approved_by: "platform-team"

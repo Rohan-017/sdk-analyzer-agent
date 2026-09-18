@@ -335,7 +335,8 @@ class ReportBuilder:
         # count is still preserved in quality_findings_count above).
         _sev_rank = {"ERROR": 0, "WARNING": 1, "INFO": 2}
         sorted_findings = sorted(
-            quality.findings, key=lambda f: _sev_rank.get(f.severity.upper(), 3)
+            quality.findings,
+            key=lambda f: (f.waived, _sev_rank.get(f.severity.upper(), 3)),
         )
         report.quality_findings = [
             {
@@ -350,6 +351,8 @@ class ReportBuilder:
                 "confidence":         f.confidence,
                 "confidence_reason":  f.confidence_reason,
                 "confidence_source":  f.confidence_source,
+                "waived":         f.waived,
+                "waiver_reason":  f.waiver_reason,
             }
             for f in sorted_findings[:500]
         ]
@@ -878,8 +881,8 @@ class ReportBuilder:
             conf = f.get("confidence", "UNCONFIRMED")
             if not conf or conf == "UNCONFIRMED":
                 return '<span style="color:#adb5bd;font-size:0.78em">—</span>'
-            colors = {"HIGH": "#dc3545", "LOW": "#6c757d"}
-            labels = {"HIGH": "Likely real", "LOW": "Likely test fixture"}
+            colors = {"HIGH": "#dc3545", "MEDIUM": "#fd7e14", "LOW": "#6c757d"}
+            labels = {"HIGH": "Likely real", "MEDIUM": "Possibly real", "LOW": "Likely test fixture"}
             c = colors.get(conf, "#6c757d")
             label = labels.get(conf, conf)
             source = f.get("confidence_source", "")
@@ -889,17 +892,25 @@ class ReportBuilder:
             return (f'<span title="{title}" style="background:{c};color:#fff;padding:2px 8px;'
                     f'border-radius:4px;font-size:0.78em;cursor:help">{label}</span>')
 
+        def _waiver_badge(f: dict) -> str:
+            if not f.get("waived"):
+                return '<span style="color:#28a745;font-size:0.78em">Active</span>'
+            reason = (f.get("waiver_reason") or "").replace('"', "&quot;")
+            return (f'<span title="{reason}" style="background:#6c757d;color:#fff;padding:2px 8px;'
+                    f'border-radius:4px;font-size:0.78em;cursor:help">Waived</span>')
+
         quality_finding_rows = "".join(
-            f"""<tr class="quality-row" data-severity="{f.get('severity','')}" data-category="{f.get('category','')}">
+            f"""<tr class="quality-row" data-severity="{f.get('severity','')}" data-category="{f.get('category','')}" style="{'opacity:0.55' if f.get('waived') else ''}">
                   <td>{_quality_sev_badge(f.get('severity','INFO'))}</td>
                   <td>{f.get('category','—')}</td>
                   <td style="font-size:0.82em">{f.get('rule_id','—')}</td>
                   <td>{f.get('message','—')}</td>
                   <td style="font-size:0.8em;word-break:break-all">{f.get('file_path','—')}:{f.get('line_number','') or ''}</td>
                   <td>{_confidence_badge(f)}</td>
+                  <td>{_waiver_badge(f)}</td>
                 </tr>"""
             for f in r.quality_findings
-        ) or "<tr><td colspan='6' style='text-align:center;color:#aaa'>No individual findings recorded</td></tr>"
+        ) or "<tr><td colspan='7' style='text-align:center;color:#aaa'>No individual findings recorded</td></tr>"
 
         quality_shown_note = (
             f"Showing {len(r.quality_findings):,} of {r.quality_findings_count:,} total findings "
@@ -1627,6 +1638,7 @@ function sortTable(tableId, colIndex, th) {
             <th>Message</th>
             <th>Location</th>
             <th title="Confidence this is a real issue vs. a test fixture/sample (secret findings only)">Confidence</th>
+            <th title="Whether this finding has been reviewed and waived (see config/waivers.yml)">Status</th>
           </tr>
         </thead>
         <tbody id="qualityBody">

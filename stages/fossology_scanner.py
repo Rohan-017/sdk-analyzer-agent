@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 
+from stages.path_filters import EXCLUDED_DIR_NAMES
+
 logger = logging.getLogger(__name__)
 
 
@@ -373,7 +375,7 @@ class FossologyScanner:
 
         # Priority 2: collect source files, split by priority vs sample-only
         skip_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv",
-                     "build", "dist"}
+                     "build", "dist"} | EXCLUDED_DIR_NAMES
         priority_files: List[Path] = []
         sample_pool:    List[Path] = []
 

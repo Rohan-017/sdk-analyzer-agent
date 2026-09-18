@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from stages.confidence_triage import AITriageEngine, apply_heuristic_triage
+from stages.path_filters import semgrep_exclude_args, gitleaks_allowlist_config
+from stages.waivers import apply_waivers, load_waivers
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +128,11 @@ class QualityFinding:
     confidence: str = "UNCONFIRMED"
     confidence_reason: str = ""
     confidence_source: str = ""   # "heuristic" or "ai-local"
+    # Waiver support (see stages/waivers.py) — a reviewed finding is kept
+    # visible for audit but excluded from severity/category counts (and
+    # therefore the risk score) once waived.
+    waived: bool = False
+    waiver_reason: str = ""
 
 
 @dataclass
@@ -161,6 +168,7 @@ class QualityChecker:
         self._semgrep_available  = self._check_semgrep()
         self._gitleaks_available = self._check_gitleaks()
         self._ai_triage = AITriageEngine()
+        self._waivers = load_waivers()
 
     # ------------------------------------------------------------------
     # Public API
@@ -207,7 +215,26 @@ class QualityChecker:
         if ai_queried:
             logger.info("Confidence triage: refined %d finding group(s) via local AI model", ai_queried)
 
-        result.recommendations = self._generate_recommendations(result.findings)
+        # ------------------------------------------------------------------
+        # Waivers — previously-reviewed findings (see stages/waivers.py).
+        # Waived findings stay in the report for audit visibility but are
+        # excluded from severity/category counts so they don't drive the
+        # risk score or "active findings" total on every future scan.
+        # ------------------------------------------------------------------
+        waived = apply_waivers(result.findings, self._waivers, src_root=src_dir)
+        if waived:
+            logger.info("Waivers: %d finding(s) suppressed by config/waivers.yml", waived)
+            result.category_counts = {}
+            result.severity_counts = {}
+            for f in result.findings:
+                if f.waived:
+                    continue
+                result.category_counts[f.category] = result.category_counts.get(f.category, 0) + 1
+                result.severity_counts[f.severity] = result.severity_counts.get(f.severity, 0) + 1
+
+        result.recommendations = self._generate_recommendations(
+            [f for f in result.findings if not f.waived]
+        )
         return result
 
     # ------------------------------------------------------------------
@@ -223,11 +250,19 @@ class QualityChecker:
 
     async def _run_gitleaks(self, src_dir: str) -> List[QualityFinding]:
         output_json = str(self.output_dir / "gitleaks_output.json")
+        # Skip vendored/third-party/test-fixture directories entirely rather
+        # than scanning them and relying on confidence_triage.py to relabel
+        # the results afterwards — faster, and keeps the raw finding count
+        # itself meaningful (see stages/path_filters.py for rationale).
+        allowlist_config = str(self.output_dir / "gitleaks_allowlist.toml")
+        with open(allowlist_config, "w") as f:
+            f.write(gitleaks_allowlist_config())
         cmd = [
             "gitleaks", "detect",
             "--source", src_dir,
             "--no-git",             # scan working tree, not git history
             "--no-banner",
+            "--config", allowlist_config,
             "-f", "json",
             "-r", output_json,
             "--exit-code", "0",     # never fail the process on findings
@@ -303,6 +338,10 @@ class QualityChecker:
             "--quiet",
             "--timeout", "120",
         ]
+        # Skip vendored/third-party/generated/test-fixture dirs entirely —
+        # see stages/path_filters.py for rationale (same exclusion list
+        # shared with gitleaks and the built-in/license scanners).
+        cmd += semgrep_exclude_args()
         if allow_network_rules:
             cmd += ["--config", "auto"]
             logger.info("SDK_ANALYZER_ALLOW_NETWORK_RULES=1 — using Semgrep Registry 'auto' config")
@@ -400,6 +439,13 @@ class QualityChecker:
         "node_modules",
         ".venv", "venv",
         ".github",
+        # Vendored / third-party dependencies — not code the SDK team wrote
+        # or can fix; scanning it just inflates finding counts with issues
+        # nobody here is responsible for.
+        "vendor", "vendored", "third_party", "third-party", "3rdparty", "3rd_party",
+        "bower_components",
+        # Build/generated output
+        "dist", "build", "out", "generated", "gen",
         # Compression / archiving utilities bundled as build tools
         "lzma432", "lzma465",
         "squashfs4.2", "squashfs4.3", "squashfs-tools",

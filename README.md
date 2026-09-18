@@ -74,6 +74,47 @@ curl http://localhost:8000/report/<analysis_id>/sbom/cyclonedx > sbom.json
 | `SDK_ANALYZER_AI_MODEL`   | Ollama model name used for AI triage. | `qwen2.5:3b` |
 | `SDK_ANALYZER_AI_HOST`    | Ollama API base URL. AI triage only ever talks to this host — must be a local/offline endpoint to preserve the privacy posture below. | `http://localhost:11434` |
 | `SDK_ANALYZER_AI_MAX_CALLS` | Max number of AI classification calls per run (findings are grouped by file+rule first to minimize calls). | `150` |
+| `SDK_ANALYZER_WAIVERS_FILE` | Path to a waiver/suppression YAML file (see below). | `config/waivers.yml` |
+
+## Excluding Vendored / Third-Party / Generated Code
+
+Secret and quality/security scans (gitleaks, Semgrep, the built-in rule
+engine) and license detection now skip a shared set of directories before
+scanning, rather than scanning everything and relabeling noise afterwards:
+`vendor/`, `third_party/`, `node_modules/`, `testprof/`, `test-vectors/`,
+`fixtures/`, `samples/`, `examples/`, `demos/`, `dist/`, `build/`,
+`generated/`, and a few VCS/tooling directories (see
+`stages/path_filters.py` for the full list, shared by every scanner so
+they stay in sync). This is why the real Airoha SDK test run's ~487
+gitleaks findings and large "Proprietary"-labeled file count should drop
+substantially on re-scan — most of that volume was from bundled
+third-party/test code the SDK team doesn't own, not code they need to act
+on. This is a hard-coded default list today; making it configurable per-SDK
+is a natural next step if a project's own directory naming conflicts with
+it.
+
+## Waivers — Suppressing Reviewed Findings
+
+Once a finding has been reviewed (e.g. a flagged secret that's already
+been rotated, or a confirmed false positive), record that decision in
+`config/waivers.yml` (or point `SDK_ANALYZER_WAIVERS_FILE` at your own
+file) so it doesn't reappear as a fresh risk on every future scan:
+
+```yaml
+waivers:
+  - path: "config/production/old_signing_key.pem"   # glob, relative to SDK root
+    rule_id: "gitleaks-private-key"                  # optional prefix match; omit to match any rule
+    reason: "Rotated 2024-01-15, ticket JIRA-4521"
+    approved_by: "security-team"
+```
+
+Waived findings stay visible in the report (marked "Waived", with the
+reason/approver in a tooltip) for audit purposes, but no longer count
+toward the risk score or the active-findings total — this is what makes
+the tool usable as a **recurring** CI gate instead of re-flagging the same
+accepted risk on every run. Scope note: waivers currently apply to quality
+and secret findings only, not to the aggregate license-policy check (which
+isn't yet tracked per-file at the report level).
 
 ## Confidence Triage for Secret Findings
 
