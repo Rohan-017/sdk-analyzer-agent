@@ -48,7 +48,9 @@ class ScancodeRunner:
     Falls back to a minimal Python scanner when scancode-toolkit is absent.
     """
 
-    SCANCODE_TIMEOUT = 900   # 15 minutes max
+    SCANCODE_TIMEOUT = 900   # 15 minutes — floor, used for small/medium codebases
+    SCANCODE_MAX_TIMEOUT = int(os.environ.get("SDK_ANALYZER_SCANCODE_MAX_TIMEOUT", "3600"))  # 1 hour ceiling
+    SCANCODE_SECONDS_PER_FILE = 0.01  # scaling factor for large codebases
 
     def __init__(self, output_dir: str):
         self.output_dir = Path(output_dir)
@@ -59,9 +61,9 @@ class ScancodeRunner:
     # Public API
     # ------------------------------------------------------------------
 
-    async def scan(self, src_dir: str) -> ScanCodeResult:
+    async def scan(self, src_dir: str, file_count_hint: int = 0) -> ScanCodeResult:
         if self._sc_available:
-            result = await self._run_scancode(src_dir)
+            result = await self._run_scancode(src_dir, file_count_hint)
             # If the CLI timed out or errored before producing usable output,
             # don't silently report "0 files scanned" — fall back to the
             # Python scanner so license cross-validation still runs. This
@@ -93,8 +95,20 @@ class ScancodeRunner:
                 continue
         return False
 
-    async def _run_scancode(self, src_dir: str) -> ScanCodeResult:
+    async def _run_scancode(self, src_dir: str, file_count_hint: int = 0) -> ScanCodeResult:
         output_json = str(self.output_dir / "scancode_output.json")
+        # Scale the hard kill-timeout to the codebase size instead of a fixed
+        # 15-minute cap — a 500-file SDK and a 150,000-file SDK don't deserve
+        # the same budget. Without this, ScanCode reliably times out (and
+        # silently falls back to the lighter Python scanner) on large real
+        # -world codebases, losing its more rigorous license detection right
+        # when it matters most. Floor/ceiling keep this sane at both extremes.
+        timeout = min(max(self.SCANCODE_TIMEOUT, int(file_count_hint * self.SCANCODE_SECONDS_PER_FILE)), self.SCANCODE_MAX_TIMEOUT)
+        if timeout != self.SCANCODE_TIMEOUT:
+            logger.info(
+                "ScanCode timeout scaled to %ds for %d files (default floor: %ds, ceiling: %ds)",
+                timeout, file_count_hint, self.SCANCODE_TIMEOUT, self.SCANCODE_MAX_TIMEOUT,
+            )
         cmd = [
             "scancode",
             "--license",
@@ -113,7 +127,7 @@ class ScancodeRunner:
             stderr=asyncio.subprocess.PIPE,
         )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.SCANCODE_TIMEOUT)
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             proc.kill()
             return ScanCodeResult(error="scancode timed out", scanner_used="scancode-cli")

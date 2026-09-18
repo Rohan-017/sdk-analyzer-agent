@@ -429,6 +429,17 @@ class FossologyScanner:
                     if pattern.search(content):
                         found_licenses.append(lic_id)
 
+            # "All Rights Reserved" / "Confidential" boilerplate is extremely
+            # common in copyright headers of permissively-licensed files too
+            # (e.g. a BSD/MIT header that also says "All rights reserved" as
+            # standard copyright-notice phrasing, not a genuine proprietary
+            # restriction). Only classify as Proprietary when it's the ONLY
+            # signal found — if a real OSS license identifier is present in
+            # the same header, that takes precedence and "Proprietary" is
+            # dropped as a false positive from the boilerplate phrase.
+            if "Proprietary" in found_licenses and len(found_licenses) > 1:
+                found_licenses = [l for l in found_licenses if l != "Proprietary"]
+
             # Copyright extraction
             for m in re.finditer(r"[Cc]opyright\s+(?:\(c\)\s*)?(\d{4}(?:[–\-]\d{2,4})?\s+[^\n\r]{3,80})", content):
                 copyrights.append(m.group(0).strip())

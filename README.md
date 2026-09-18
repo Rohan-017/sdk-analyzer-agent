@@ -69,8 +69,47 @@ curl http://localhost:8000/report/<analysis_id>/sbom/cyclonedx > sbom.json
 | `PORT`              | API server port                     | `8000`        |
 | `SDK_ANALYZER_ALLOW_NETWORK_RULES` | Set to `1` to let Semgrep use `--config auto` (downloads/updates rules from the public Semgrep Registry). By default Semgrep runs **fully offline** against only the bundled `config/semgrep_rules.yml` and telemetry (`SEMGREP_SEND_METRICS`) is always disabled — this keeps scans air-gapped for privacy-sensitive/proprietary source, at the cost of narrower generic-rule coverage. | (unset — offline mode) |
 | `TRIVY_CACHE_DIR`   | Where Trivy stores its vulnerability DB (~100MB, downloaded once and cached) | `~/.cache/trivy` |
+| `SDK_ANALYZER_SCANCODE_MAX_TIMEOUT` | Ceiling (seconds) for ScanCode's adaptive per-run timeout, which scales with file count (`0.01s/file`, floor 900s) so very large codebases don't hit the old fixed 15-min timeout. | `3600` |
+| `SDK_ANALYZER_ENABLE_AI_TRIAGE` | Set to `1` to enable **Tier-2 AI confidence triage** for secret findings (see below). Experimental / best-effort — off by default. | (unset — disabled) |
+| `SDK_ANALYZER_AI_MODEL`   | Ollama model name used for AI triage. | `qwen2.5:3b` |
+| `SDK_ANALYZER_AI_HOST`    | Ollama API base URL. AI triage only ever talks to this host — must be a local/offline endpoint to preserve the privacy posture below. | `http://localhost:11434` |
+| `SDK_ANALYZER_AI_MAX_CALLS` | Max number of AI classification calls per run (findings are grouped by file+rule first to minimize calls). | `150` |
 
-## Privacy & Security Posture
+## Confidence Triage for Secret Findings
+
+Secret scanners (gitleaks) reliably detect anything that *looks* like a
+credential, but can't tell a real production secret apart from a bundled
+test fixture (e.g. `testprof/test_dsa.key` in a vendored crypto library).
+Rather than reporting every hit as an undifferentiated ERROR, each
+secret/credential finding gets a `confidence` tag:
+
+- **Tier 1 — path heuristic (always on, no dependency)**: a deterministic
+  check for test/sample/mock/vendor/fixture keywords in the file's path
+  *relative to the scanned source root* (the extraction temp directory and
+  the archive's own top-level folder name are stripped first, so an SDK
+  archive that happens to be named e.g. `airoha_test_build.zip` can't
+  accidentally downgrade every finding in the whole scan). Matches are
+  tagged `LOW`; everything else is `UNCONFIRMED`.
+- **Tier 2 — local AI (opt-in, `SDK_ANALYZER_ENABLE_AI_TRIAGE=1`)**: for
+  findings Tier 1 left `UNCONFIRMED`, a small local LLM via
+  [Ollama](https://ollama.com) (fully offline, `localhost:11434` by
+  default — no finding content or secret value is ever sent anywhere over
+  the network) judges whether the path structure looks like a genuine
+  production/deployment location. Findings are grouped by (file, rule) to
+  minimize calls. **This tier is experimental**: testing with the default
+  `qwen2.5:3b` model (chosen because it's small enough to run on a CPU-only
+  4-core/15GB host) showed it can produce inconsistent or self-contradictory
+  judgments, so a grounding check verifies the model's stated reasoning
+  actually references real words from the path before trusting it — if the
+  claim can't be grounded, or Ollama is unreachable, the finding simply stays
+  `UNCONFIRMED` (fail-safe: AI can only add confidence when verifiably
+  correct, never silently hide a real finding).
+- To use Tier 2: `curl -fsSL https://ollama.com/install.sh | sh && ollama pull qwen2.5:3b`,
+  then run the analyzer with `SDK_ANALYZER_ENABLE_AI_TRIAGE=1`. It's a
+  host-level dependency, not bundled in the Docker image, since the ~2GB
+  model and CPU inference cost aren't worth adding to the default image.
+
+
 
 - Every scanning tool (Syft, Grype, Semgrep, ScanCode, FOSSology, OWASP
   Dependency-Check, gitleaks, Trivy) is open source and runs **locally** —
@@ -84,6 +123,9 @@ curl http://localhost:8000/report/<analysis_id>/sbom/cyclonedx > sbom.json
 - Secret values found by gitleaks are **redacted** (`[redacted]`) before being
   written into any report — the report tells you a secret was found, its rule,
   and its file/line, but never reprints the actual credential.
+- Optional AI confidence triage (`SDK_ANALYZER_ENABLE_AI_TRIAGE=1`, off by
+  default) only ever contacts a **local** Ollama instance and only ever sends
+  a file path + rule name — never file contents or the actual secret value.
 
 ## New: EPSS Exploit Prediction, Transitive Dependencies, Scan Diffing
 

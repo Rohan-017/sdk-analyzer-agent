@@ -347,6 +347,9 @@ class ReportBuilder:
                 "line_number":    f.line_number,
                 "line_content":   f.line_content,
                 "fix_suggestion": f.fix_suggestion,
+                "confidence":         f.confidence,
+                "confidence_reason":  f.confidence_reason,
+                "confidence_source":  f.confidence_source,
             }
             for f in sorted_findings[:500]
         ]
@@ -871,6 +874,21 @@ class ReportBuilder:
             c = colors.get(sev.upper(), "#6c757d")
             return f'<span style="background:{c};color:#fff;padding:2px 8px;border-radius:4px;font-size:0.8em">{sev}</span>'
 
+        def _confidence_badge(f: dict) -> str:
+            conf = f.get("confidence", "UNCONFIRMED")
+            if not conf or conf == "UNCONFIRMED":
+                return '<span style="color:#adb5bd;font-size:0.78em">—</span>'
+            colors = {"HIGH": "#dc3545", "LOW": "#6c757d"}
+            labels = {"HIGH": "Likely real", "LOW": "Likely test fixture"}
+            c = colors.get(conf, "#6c757d")
+            label = labels.get(conf, conf)
+            source = f.get("confidence_source", "")
+            source_label = "AI (local)" if source == "ai-local" else "heuristic" if source else ""
+            reason = (f.get("confidence_reason") or "").replace('"', "&quot;")
+            title = f"{reason} [{source_label}]" if source_label else reason
+            return (f'<span title="{title}" style="background:{c};color:#fff;padding:2px 8px;'
+                    f'border-radius:4px;font-size:0.78em;cursor:help">{label}</span>')
+
         quality_finding_rows = "".join(
             f"""<tr class="quality-row" data-severity="{f.get('severity','')}" data-category="{f.get('category','')}">
                   <td>{_quality_sev_badge(f.get('severity','INFO'))}</td>
@@ -878,9 +896,10 @@ class ReportBuilder:
                   <td style="font-size:0.82em">{f.get('rule_id','—')}</td>
                   <td>{f.get('message','—')}</td>
                   <td style="font-size:0.8em;word-break:break-all">{f.get('file_path','—')}:{f.get('line_number','') or ''}</td>
+                  <td>{_confidence_badge(f)}</td>
                 </tr>"""
             for f in r.quality_findings
-        ) or "<tr><td colspan='5' style='text-align:center;color:#aaa'>No individual findings recorded</td></tr>"
+        ) or "<tr><td colspan='6' style='text-align:center;color:#aaa'>No individual findings recorded</td></tr>"
 
         quality_shown_note = (
             f"Showing {len(r.quality_findings):,} of {r.quality_findings_count:,} total findings "
@@ -1607,6 +1626,7 @@ function sortTable(tableId, colIndex, th) {
             <th>Rule</th>
             <th>Message</th>
             <th>Location</th>
+            <th title="Confidence this is a real issue vs. a test fixture/sample (secret findings only)">Confidence</th>
           </tr>
         </thead>
         <tbody id="qualityBody">

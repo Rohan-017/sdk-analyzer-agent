@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from stages.confidence_triage import AITriageEngine, apply_heuristic_triage
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +118,14 @@ class QualityFinding:
     line_number: int
     line_content: str = ""
     fix_suggestion: str = ""
+    # Confidence that this finding is a genuine issue rather than a test
+    # fixture / dummy / vendored sample (relevant mainly for secret-detection
+    # findings, which have a known false-positive risk on test keys). Values:
+    # "UNCONFIRMED" (default — no triage applied), "LOW" (looks like a test
+    # fixture), "HIGH" (looks like a real, actionable finding).
+    confidence: str = "UNCONFIRMED"
+    confidence_reason: str = ""
+    confidence_source: str = ""   # "heuristic" or "ai-local"
 
 
 @dataclass
@@ -150,6 +160,7 @@ class QualityChecker:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self._semgrep_available  = self._check_semgrep()
         self._gitleaks_available = self._check_gitleaks()
+        self._ai_triage = AITriageEngine()
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,6 +192,20 @@ class QualityChecker:
                 result.scanner_used = f"{result.scanner_used}+gitleaks"
         else:
             logger.info("gitleaks not found — secret detection limited to Semgrep/builtin rules")
+
+        # ------------------------------------------------------------------
+        # Confidence triage for secret/credential findings — distinguishes
+        # real risks from bundled test fixtures (see confidence_triage.py).
+        # Tier 1 (heuristic) always runs; Tier 2 (local AI via Ollama) only
+        # runs if explicitly enabled and reachable, and only refines cases
+        # the heuristic couldn't confidently resolve.
+        # ------------------------------------------------------------------
+        tagged = apply_heuristic_triage(result.findings, src_root=src_dir)
+        if tagged:
+            logger.info("Confidence triage: tagged %d secret/credential findings (path heuristic)", tagged)
+        ai_queried = self._ai_triage.triage(result.findings, src_root=src_dir)
+        if ai_queried:
+            logger.info("Confidence triage: refined %d finding group(s) via local AI model", ai_queried)
 
         result.recommendations = self._generate_recommendations(result.findings)
         return result

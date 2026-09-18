@@ -178,7 +178,7 @@ class SDKAnalyzerAgent:
         _stage_banner(2, 6, "Generating SBOM and scanning licenses (parallel)")
         # Run license scans first so their results can enrich the SBOM
         fossology_task  = asyncio.create_task(self.fossology.scan(src_dir))
-        scancode_task   = asyncio.create_task(self.scancode.scan(src_dir))
+        scancode_task   = asyncio.create_task(self.scancode.scan(src_dir, file_count_hint=extraction_result.total_files))
         fossology_result, scancode_result = await asyncio.gather(
             fossology_task, scancode_task, return_exceptions=False,
         )
